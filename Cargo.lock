@@ -2101,6 +2101,7 @@ dependencies = [
  "bao1x-hal-service",
  "base32",
  "base45",
+ "base64 0.22.1",
  "blitstr2",
  "bytemuck",
  "byteorder",

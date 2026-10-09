@@ -21,6 +21,10 @@ const FAST_SCROLL_DELAY_MS: u64 = 1300;
 const KEYUP_DELAY_MS: u64 = 100;
 /// How many elements to skip through on fast scroll
 const PAGE_INCREMENT: usize = 6;
+/// Key presses queue up while a meeting URL is being typed (which can take many seconds). Any "type"
+/// press that arrives within this window after typing finishes is one of those queued presses, and is
+/// dropped so that an impatient second press doesn't type the URL into the host twice.
+const MEETING_RETYPE_GUARD_MS: u64 = 750;
 
 const FACTORY_QR_STRING: &'static str = "test://factory-test-data-lorem-ipsum-data-data";
 const FACTORY_TIMEOUT_S: u64 = 90;
@@ -512,6 +516,8 @@ pub struct VaultUi {
     usb_dev: usb_bao1x::UsbHid,
     last_key_time: u64,
     start_hold_time: u64,
+    /// when the last meeting URL finished typing, in ticktimer ms
+    last_meeting_type: Option<u64>,
     tt: ticktimer_server::Ticktimer,
 
     // various state machines
@@ -584,6 +590,7 @@ impl VaultUi {
             tt,
             last_key_time: now,
             start_hold_time: now,
+            last_meeting_type: None,
             start_time: None,
             factory_test: FactoryTestState::InitWait { start_time: std::time::Instant::now() },
             tour_state: TourState::Welcome { seen_press: false },
@@ -1122,6 +1129,54 @@ impl VaultUi {
                 };
                 self.display_list.draw(insert_at);
             }
+            VaultMode::Meeting => {
+                self.clear_area();
+                let screensize = self.screen_size;
+                if self.item_lists.lock().unwrap().is_db_empty(VaultMode::Meeting) {
+                    let mut box_text = TextView::new(
+                        Gid::dummy(),
+                        TextBounds::CenteredBot(Rectangle::new(
+                            Point::new(0, 0),
+                            Point::new(screensize.x, screensize.y / 2 + self.item_height * 2),
+                        )),
+                    );
+                    box_text.draw_border = false;
+                    box_text.clear_area = true;
+                    box_text.invert = true;
+                    box_text.style = GlyphStyle::Bold;
+                    write!(box_text, "Meetings\nNo links yet. Scan a meeting QR code or load a list over USB.")
+                        .ok();
+                    self.gfx.draw_textview(&mut box_text).expect("couldn't post empty notification");
+                    self.gfx.flush().ok();
+                    return;
+                }
+
+                // ---- top area: name, use count and the URL that will be typed ----
+                let mut insert_at = 0;
+                if let Some(entry) = self.get_selected_item() {
+                    let mut box_text = TextView::new(
+                        Gid::dummy(),
+                        TextBounds::CenteredTop(Rectangle::new(
+                            Point::new(0, insert_at),
+                            Point::new(screensize.x, insert_at + self.item_height * 3),
+                        )),
+                    );
+                    box_text.draw_border = false;
+                    box_text.clear_area = false;
+                    box_text.ellipsis = true;
+                    box_text.style = self.style;
+                    box_text.invert = true;
+                    // `extra` holds the URL; drop the scheme so more of the distinguishing part fits
+                    let url = entry.extra.as_str();
+                    let short_url = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+                    write!(box_text, "Meet [{}] {}", entry.count, short_url).ok();
+                    self.gfx.draw_textview(&mut box_text).unwrap();
+                    insert_at += box_text.bounds_computed.unwrap().height() as isize;
+                } else {
+                    insert_at = self.item_height * 2;
+                }
+                self.display_list.draw(insert_at);
+            }
             VaultMode::FactoryTest => {
                 self.clear_area();
                 match &self.factory_test {
@@ -1492,6 +1547,16 @@ impl VaultUi {
                 return Some(k);
             }
         }
+        // The badge's buttons only ever produce arrow and symbol glyphs. Plain ASCII arrives when the
+        // USB serial console is in use, since every character of a console line is also delivered here
+        // as a key press. None of the list screens act on ASCII, so don't spend a full redraw on each
+        // character: it changes nothing on screen and it delays the replies to `meet` console
+        // commands, which wait in the same message queue.
+        if k.is_ascii()
+            && matches!(mode_at_entry, VaultMode::Password | VaultMode::Totp | VaultMode::Meeting)
+        {
+            return Some(k);
+        }
         log::debug!("handle_key: {:?}", mode_at_entry);
         let filtered_k = match mode_at_entry {
             VaultMode::FactoryTest => {
@@ -1638,7 +1703,8 @@ impl VaultUi {
                     '→' => {
                         {
                             // lock needs to go out of scope so we don't hang the later ops
-                            *self.mode.lock().unwrap() = VaultMode::Password;
+                            // the lists cycle Password -> TOTP -> Meeting -> Password
+                            *self.mode.lock().unwrap() = VaultMode::Meeting;
                         }
                         // reload DB on mode switch
                         xous::send_message(
@@ -1659,6 +1725,47 @@ impl VaultUi {
                     }
                 }
                 self.totp_code = None;
+                Some(k)
+            }
+            VaultMode::Meeting => {
+                let increment = if self.manage_longpress() { PAGE_INCREMENT } else { 1 };
+                match k {
+                    '↑' | '↓' => {
+                        for _ in 0..increment {
+                            self.display_list.key_action(k);
+                        }
+                    }
+                    '←' => {
+                        let queued_during_typing = self
+                            .last_meeting_type
+                            .map(|done| self.tt.elapsed_ms().saturating_sub(done) < MEETING_RETYPE_GUARD_MS)
+                            .unwrap_or(false);
+                        if !queued_during_typing {
+                            if let Some(item) = self.get_selected_item() {
+                                self.handle_meeting_type(&item.guid);
+                            }
+                        }
+                    }
+                    '→' => {
+                        {
+                            *self.mode.lock().unwrap() = VaultMode::Password;
+                        }
+                        // reload DB on mode switch
+                        xous::send_message(
+                            self.actions_conn,
+                            xous::Message::new_blocking_scalar(
+                                ActionOp::ReloadDb.to_usize().unwrap(),
+                                0,
+                                0,
+                                0,
+                                0,
+                            ),
+                        )
+                        .ok();
+                        self.refresh_draw_list();
+                    }
+                    _ => {}
+                }
                 Some(k)
             }
             VaultMode::Idle => match k {
@@ -1753,6 +1860,71 @@ impl VaultUi {
     }
 
     pub(crate) fn get_filter(&self) -> String { self.filter.to_owned() }
+
+    /// Shows a short full-screen status message. The caller is responsible for the redraw that
+    /// replaces it.
+    fn draw_banner(&self, text: &str) {
+        self.gfx.clear().ok();
+        let mut tv = TextView::new(
+            Gid::dummy(),
+            TextBounds::CenteredTop(Rectangle::new(Point::new(0, 36), Point::new(127, 110))),
+        );
+        tv.invert = true;
+        tv.margin = Point::new(2, 2);
+        tv.style = GlyphStyle::Bold;
+        tv.draw_border = false;
+        write!(tv, "{}", text).ok();
+        self.gfx.draw_textview(&mut tv).ok();
+        self.gfx.flush().ok();
+    }
+
+    /// Types the named meeting's URL into the host as a USB keyboard, followed by Enter unless that
+    /// has been turned off in the menu. Blocks until typing is done.
+    pub(crate) fn handle_meeting_type(&mut self, name: &str) {
+        // Always re-read from disk: the list may have been replaced over USB since it was cached, and
+        // loading re-validates the record so only printable ASCII can ever reach the host.
+        let (mut rec, enter) = {
+            let pddb = self.pddb.borrow();
+            match meeting_store::load_meeting(&pddb, name) {
+                Ok(rec) => (rec, meeting_store::get_meeting_enter(&pddb)),
+                Err(e) => {
+                    log::error!("couldn't load meeting {}: {:?}", name, e);
+                    self.draw_banner("Can't read this meeting. Add it again.");
+                    self.tt.sleep_ms(2000).ok();
+                    self.last_meeting_type = Some(self.tt.elapsed_ms());
+                    return;
+                }
+            }
+        };
+        let to_type = rec.typed(enter);
+        let expected = to_type.chars().count();
+        self.draw_banner("Typing link...\nKeep the cursor where the link should go.");
+        let sent = self.usb_dev.send_str(&to_type).unwrap_or(0);
+        if sent == expected {
+            let now = utc_now().timestamp().max(0) as u64;
+            if let Err(e) = meeting_store::touch_meeting(&self.pddb.borrow(), &mut rec, now) {
+                // the link was typed, so a failure to record that is not worth interrupting the user
+                log::warn!("couldn't update meeting usage: {:?}", e);
+            } else if let Some(item) = self
+                .item_lists
+                .lock()
+                .unwrap()
+                .get(VaultMode::Meeting, &ListKey::key_from_parts(&rec.name, &rec.name))
+            {
+                item.count = rec.count;
+                item.atime = rec.atime;
+            }
+        } else {
+            log::warn!("meeting autotype sent {} of {} keys", sent, expected);
+            self.draw_banner(if sent == 0 {
+                "Nothing typed. Plug the badge into a computer over USB."
+            } else {
+                "USB dropped out. The link was only partly typed."
+            });
+            self.tt.sleep_ms(2500).ok();
+        }
+        self.last_meeting_type = Some(self.tt.elapsed_ms());
+    }
 
     pub(crate) fn handle_autotype(&mut self, guid: String, type_username: bool) -> Result<(), String> {
         // we re-fetch the entry for autotype, because the PDDB could have unmounted a basis.

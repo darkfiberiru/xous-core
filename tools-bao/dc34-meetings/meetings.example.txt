@@ -1,0 +1,9 @@
+# One meeting per line:  Name | URL
+#
+# Names: up to 48 bytes, no ':' or '|'. They are what you see on the badge, so keep them short.
+# URLs:  up to 1024 characters, printable ASCII with no spaces (write a space as %20).
+# These are placeholders - replace them with your own links.
+
+Daily standup | https://meet.example.com/abc-defg-hij
+Weekly sync   | https://example.zoom.us/j/1234567890?pwd=REPLACEME
+1-on-1        | https://teams.example.com/l/meetup-join/REPLACEME

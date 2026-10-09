@@ -5,6 +5,7 @@ use aes_gcm_siv::{Nonce, Tag};
 use bao1x_api::keyboard::KeyMap;
 use ux::*;
 mod itemcache;
+mod meetcmd;
 use itemcache::*;
 mod actions;
 mod storage;
@@ -74,6 +75,8 @@ pub enum VaultMode {
     About,
     Totp,
     Password,
+    /// List of named meeting URLs that are typed into the host over USB HID
+    Meeting,
     TokenHelp,
     #[cfg(feature = "tetris")]
     Tetris,
@@ -103,6 +106,7 @@ impl VaultMode {
             VaultMode::Idle => true,
             VaultMode::IdleDevMode => true,
             VaultMode::Password => false,
+            VaultMode::Meeting => false,
             VaultMode::Totp => true,
             VaultMode::GeneScan => true,
             VaultMode::ResponseGene { quantum: _ } => true,
@@ -367,9 +371,12 @@ fn main() -> ! {
             let mut kbd_key = pddb
                 .get(DC34_DICT, DC34_KEYMAP, None, true, true, None, None::<fn()>)
                 .expect("couldn't create PDDB key");
-            // initialize to Dvorak, so that users who created passwords using the stock conference firmware
-            // don't have a surprising experience that their passwords stopped working on the firmware update
-            let kbd_code: usize = KeyMap::Dvorak.into();
+            // Upstream initializes this to Dvorak for compatibility with passwords created on the stock
+            // conference firmware. This fork defaults to QWERTY instead: a missing key means a freshly
+            // formatted PDDB (which is what entering developer mode leaves behind), so there are no
+            // legacy passwords to stay compatible with, and a Dvorak mapping would scramble every
+            // meeting URL typed into a QWERTY host. Change it under "Set keymap..." if needed.
+            let kbd_code: usize = KeyMap::Qwerty.into();
             kbd_key.write(&kbd_code.to_le_bytes()).ok();
         }
     }
@@ -406,6 +413,7 @@ fn main() -> ! {
     }
     let menu_mgr = submenu::create_submenu(conn, actions_conn, menu_sid, offer_reset);
 
+    let mut meet_cmd = meetcmd::MeetCmd::new();
     let mut menu_active = false;
     let mut jig_ready_seen = false;
     let mut mutation_param: u8 = 0;
@@ -625,7 +633,10 @@ fn main() -> ! {
                             animate.store(prior_mode, Ordering::SeqCst);
                             global_config.lock().unwrap().pause_accel(false);
 
-                            if mode_now == VaultMode::Totp || mode_now == VaultMode::Password {
+                            if mode_now == VaultMode::Totp
+                                || mode_now == VaultMode::Password
+                                || mode_now == VaultMode::Meeting
+                            {
                                 // reload DB to pickup the new data
                                 xous::send_message(
                                     actions_conn,
@@ -1281,6 +1292,51 @@ fn main() -> ! {
                         log::error!("Error in user query, cowardly not doing anything");
                     }
                 };
+            }
+            Some(VaultOp::MenuMeetingEnter) => {
+                animate.store(false, Ordering::SeqCst);
+                let current = meeting_store::get_meeting_enter(&pddb);
+                modals.add_list_item("Yes").unwrap();
+                modals.add_list_item("No").unwrap();
+                let prompt = format!(
+                    "Press Enter after typing a meeting URL? (now: {})",
+                    if current { "Yes" } else { "No" }
+                );
+                // leave the setting alone unless a choice was positively made
+                if modals.get_radiobutton(&prompt).is_ok() {
+                    if let Ok(index) = modals.get_radio_index() {
+                        if let Err(e) = meeting_store::set_meeting_enter(&pddb, index == 0) {
+                            log::error!("couldn't save meeting Enter setting: {:?}", e);
+                        }
+                    }
+                }
+                animate.store(mode.lock().unwrap().should_animate(), Ordering::SeqCst);
+            }
+            Some(VaultOp::MeetCmd) => {
+                // a `meet ...` line typed (or scripted) on the USB serial console
+                let (reply, changed) = match msg.body.memory_message() {
+                    Some(mem) => match unsafe { Buffer::from_memory_message(mem) }.to_original::<MeetCmdIpc, _>() {
+                        Ok(cmd) => meet_cmd.process(&cmd.line),
+                        Err(_) => (String::from("MEET ERR ipc"), false),
+                    },
+                    // not a memory message: nothing this app sends, so don't trust it enough to unwrap
+                    None => (String::from("MEET ERR ipc"), false),
+                };
+                // stdout is mirrored to the USB serial port, which is where the host tool is listening
+                println!("{}", reply);
+                // Only the Meeting screen caches the list; every other mode re-reads it from disk when
+                // the user switches to it.
+                if changed && *mode.lock().unwrap() == VaultMode::Meeting {
+                    xous::send_message(
+                        actions_conn,
+                        xous::Message::new_blocking_scalar(ActionOp::ReloadDb.to_usize().unwrap(), 0, 0, 0, 0),
+                    )
+                    .ok();
+                    vault_ui.refresh_draw_list();
+                    if !menu_active {
+                        vault_ui.redraw();
+                    }
+                }
             }
             Some(VaultOp::Jig) => {
                 *mode.lock().unwrap() = VaultMode::FactoryTest;

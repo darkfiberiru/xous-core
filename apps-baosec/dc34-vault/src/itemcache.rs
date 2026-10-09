@@ -291,6 +291,7 @@ impl FilteredListView {
 pub struct ItemLists {
     totp: FilteredListView,
     pw: FilteredListView,
+    meeting: FilteredListView,
     idle: FilteredListView,
 }
 #[allow(dead_code)]
@@ -299,6 +300,7 @@ impl ItemLists {
         ItemLists {
             totp: FilteredListView::new(),
             pw: FilteredListView::new(),
+            meeting: FilteredListView::new(),
             idle: FilteredListView::new(),
         }
     }
@@ -309,6 +311,7 @@ impl ItemLists {
         let view = match mode {
             VaultMode::Password => &self.pw,
             VaultMode::Totp => &self.totp,
+            VaultMode::Meeting => &self.meeting,
             _ => &self.idle,
         };
         view.find_by_name(name)
@@ -318,6 +321,7 @@ impl ItemLists {
         match list_type {
             VaultMode::Totp => &mut self.totp,
             VaultMode::Password => &mut self.pw,
+            VaultMode::Meeting => &mut self.meeting,
             _ => &mut self.idle,
         }
     }
@@ -326,6 +330,7 @@ impl ItemLists {
         match list_type {
             VaultMode::Totp => &self.totp,
             VaultMode::Password => &self.pw,
+            VaultMode::Meeting => &self.meeting,
             _ => &self.idle,
         }
     }
@@ -351,6 +356,7 @@ impl ItemLists {
     pub fn set_items_per_screen(&mut self, ips: isize) {
         self.totp.set_items_per_screen(ips as usize);
         self.pw.set_items_per_screen(ips as usize);
+        self.meeting.set_items_per_screen(ips as usize);
     }
 
     pub fn clear_filter(&mut self) {}
@@ -360,6 +366,7 @@ impl ItemLists {
     pub fn clear_all(&mut self) {
         self.pw.clear();
         self.totp.clear();
+        self.meeting.clear();
     }
 
     /// Sets up a filter for the selected list type

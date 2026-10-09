@@ -17,6 +17,8 @@ use bao1x_hal_service::api::TimeOp;
 use bao1x_hal_service::trng::Trng;
 #[cfg(feature = "board-baosec")]
 use chrono::{DateTime, Utc};
+use dc34_api::meeting::{MEETING_QR_SCHEME, MeetingRecord};
+use dc34_api::meeting_store;
 use dc34_vault::{VAULT_PASSWORD_DICT, VAULT_TOTP_DICT, atime_to_str, utc_now};
 use keystore::Keystore;
 use locales::t;
@@ -709,6 +711,16 @@ impl ActionManager {
             t!("vault.delete.confirm", locales::LANG),
             entry.description
         )) {
+            if entry.mode == VaultMode::Meeting {
+                // meetings are keyed by name; the caller reloads the list from disk afterwards
+                match meeting_store::delete_meeting(&self.pddb.borrow(), &entry.key_guid) {
+                    Ok(_) => {
+                        self.modals.show_notification(t!("vault.completed", locales::LANG), None).ok();
+                    }
+                    Err(e) => self.report_err(t!("vault.error.internal_error", locales::LANG), Some(e)),
+                }
+                return;
+            }
             let choice = match entry.mode {
                 VaultMode::Password => Some(storage::ContentKind::Password),
                 VaultMode::Totp => Some(storage::ContentKind::TOTP),
@@ -786,6 +798,17 @@ impl ActionManager {
         let choice = match entry.mode {
             VaultMode::Password => storage::ContentKind::Password,
             VaultMode::Totp => storage::ContentKind::TOTP,
+            VaultMode::Meeting => {
+                // a URL is impractical to edit with four buttons; adding a meeting with the same name
+                // replaces it
+                self.modals
+                    .show_notification(
+                        "To change a meeting, add it again with the same name by QR code or USB.",
+                        None,
+                    )
+                    .ok();
+                return;
+            }
             _ => return,
         };
 
@@ -1116,6 +1139,27 @@ impl ActionManager {
         };
         log::debug!("heap usage A: {}", heap_usage());
         match self.mode_cache {
+            VaultMode::Meeting => {
+                self.item_lists.lock().unwrap().clear(self.mode_cache);
+                match meeting_store::load_meetings(&self.pddb.borrow()) {
+                    Ok((meetings, skipped)) => {
+                        let mut il = self.item_lists.lock().unwrap();
+                        il.expand(self.mode_cache, meetings.len());
+                        for m in meetings {
+                            // name is both the display string and the PDDB key; `extra` carries the URL
+                            let guid = m.name.clone();
+                            il.push(self.mode_cache, ListItem::new(m.name, m.url, guid, m.atime, m.count));
+                        }
+                        drop(il);
+                        if skipped != 0 {
+                            // not a modal: this runs on every reload, and the entries stay skipped
+                            // until they are deleted or replaced
+                            log::warn!("{} unreadable meeting entries were skipped", skipped);
+                        }
+                    }
+                    Err(e) => self.report_err("Error opening meeting list", Some(e)),
+                }
+            }
             VaultMode::Totp => {
                 self.item_lists.lock().unwrap().clear(self.mode_cache);
                 match self.pddb.borrow().read_dict(VAULT_TOTP_DICT, None, Some(256 * 1024)) {
@@ -1514,6 +1558,7 @@ impl ActionManager {
                             "time" => {
                                 self.set_time(data);
                             }
+                            MEETING_QR_SCHEME => self.add_meeting_from_qr(data),
                             _ => {
                                 self.modals
                                     .show_notification(t!("vault.error.qr_unrecognized", locales::LANG), None)
@@ -1530,6 +1575,63 @@ impl ActionManager {
                 xous::Message::new_scalar(VaultOp::AbortQr.to_usize().unwrap(), 0, 0, 0, 0),
             )
             .ok();
+        }
+    }
+
+    /// Handles a `meeting://<name>|<url>` QR code. Works from any of the token-mode lists.
+    ///
+    /// QR codes are unauthenticated, and whatever is stored here will later be typed into a computer,
+    /// so nothing is saved until the user has been shown the name and the whole link and approved
+    /// them. A link too long for the approval dialog is paged through first rather than abbreviated.
+    fn add_meeting_from_qr(&mut self, data: &str) {
+        /// How much of a link fits in the approval dialog above its Yes/No choices on the 128x128
+        /// display, alongside the question itself.
+        const INLINE_URL_CHARS: usize = 56;
+        /// How much of a link is shown per page when it has to be paged.
+        const PAGE_URL_CHARS: usize = 84;
+        let rec = match MeetingRecord::from_qr(data, utc_now().timestamp().max(0) as u64) {
+            Ok(rec) => rec,
+            Err(e) => {
+                self.modals.show_notification(&format!("Meeting QR code rejected: {}", e), None).ok();
+                return;
+            }
+        };
+        let replacing = meeting_store::meeting_exists(&self.pddb.borrow(), rec.key());
+        let verb = if replacing { "Replace" } else { "Add" };
+        let query = if rec.url.len() <= INLINE_URL_CHARS {
+            format!("{} meeting \"{}\"?\n{}", verb, rec.name, rec.url)
+        } else {
+            // the URL is validated ASCII, so byte chunks are character chunks
+            let pages: Vec<&str> = rec
+                .url
+                .as_bytes()
+                .chunks(PAGE_URL_CHARS)
+                .map(|c| core::str::from_utf8(c).unwrap_or(""))
+                .collect();
+            for (i, page) in pages.iter().enumerate() {
+                self.modals
+                    .show_notification(
+                        &format!("\"{}\" link, part {} of {}:\n{}", rec.name, i + 1, pages.len(), page),
+                        None,
+                    )
+                    .ok();
+            }
+            format!("{} meeting \"{}\" with that {}-character link?", verb, rec.name, rec.url.len())
+        };
+        if !self.yes_no_approval(&query) {
+            return;
+        }
+        match meeting_store::save_meeting(&self.pddb.borrow(), &rec) {
+            Ok(_) => {
+                if self.mode_cache != VaultMode::Meeting {
+                    // on the Meeting screen the new entry simply appears in the list; elsewhere, say
+                    // where it went
+                    self.modals
+                        .show_notification("Meeting saved. Press right to reach the Meetings list.", None)
+                        .ok();
+                }
+            }
+            Err(e) => self.report_err("Couldn't save meeting", Some(e)),
         }
     }
 

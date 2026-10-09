@@ -1,0 +1,19 @@
+# Host-side test harness for the DC34 meeting-link feature.
+#
+# Compiles the *real* firmware sources (meeting.rs, meeting_store.rs, meetcmd.rs) against an
+# in-memory stand-in for the PDDB, and exposes the `meet` console protocol on stdin/stdout so the
+# Python host tool can be tested end to end without a badge.
+[package]
+name = "dc34-meetings-harness"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+pddb = { path = "pddb-stub", package = "pddb-stub" }
+dc34-api = { path = "dc34-api-stub", package = "dc34-api-stub" }
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
+
+# keep this out of the xous-core workspace: it is a host program, not firmware
+[workspace]
+members = [".", "pddb-stub", "dc34-api-stub"]

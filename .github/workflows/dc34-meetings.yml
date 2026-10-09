@@ -1,0 +1,64 @@
+# Builds the DC34 badge firmware with the Meetings feature and runs its host-side tests.
+# The three .uf2 files are attached to each run as the "dc34-meetings-firmware" artifact.
+on:
+  push:
+    branches:
+      - meetings-autotype
+  workflow_dispatch:
+
+name: DC34 Meetings firmware
+
+jobs:
+  host-tests:
+    name: Host tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Unit tests for the record format
+        run: |
+          rustc --edition 2021 --test libs/dc34-api/src/meeting.rs -o /tmp/meeting-tests
+          /tmp/meeting-tests
+
+      - name: Protocol tests against the firmware code
+        run: |
+          cargo build --release --manifest-path tools-bao/dc34-meetings/harness/Cargo.toml
+          python3 tools-bao/dc34-meetings/test_dc34_meetings.py
+
+  firmware:
+    name: Build firmware
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Ubuntu dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y libxkbcommon-dev
+
+      - name: Update to latest toolchain
+        run: rustup update
+
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      # image signing embeds a version derived from `git describe`
+      - name: Fetch tags
+        run: |
+          git fetch --prune --unshallow --tags
+          git describe --tags || git fetch --tags https://github.com/betrusted-io/xous-core.git
+
+      - name: Install RISC-V toolkit
+        run: cargo xtask install-toolkit --force --no-verify
+
+      - name: Build DC34 image
+        run: cargo xtask baosec-lite dc34-console~flash dc34-vault --no-verify
+
+      - name: Upload firmware
+        uses: actions/upload-artifact@v4
+        with:
+          name: dc34-meetings-firmware
+          if-no-files-found: error
+          path: |
+            target/riscv32imac-unknown-xous-elf/release/loader.uf2
+            target/riscv32imac-unknown-xous-elf/release/xous.uf2
+            target/riscv32imac-unknown-xous-elf/release/swap.uf2

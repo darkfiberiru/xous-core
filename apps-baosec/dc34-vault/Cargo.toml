@@ -79,6 +79,8 @@ sntpc = { version = "0.3.1" }
 
 # QR code encoding
 base45 = "3.1.0"
+# meeting list transfer over USB serial
+base64 = { version = "0.22.1", default-features = false, features = ["alloc"] }
 
 getrandom = "=0.2.12"
 

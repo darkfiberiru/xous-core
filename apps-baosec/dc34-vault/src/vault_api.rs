@@ -67,6 +67,9 @@ pub(crate) enum VaultOp {
     HandleQr,
     AbortQr,
 
+    /// Meetings: toggle whether Enter is pressed after the URL is typed
+    MenuMeetingEnter,
+
     // Note: these sit before the explicitly-numbered ImageLoad = 1024, so gating them out
     // leaves every other opcode's discriminant unchanged.
     #[cfg(feature = "tetris")]
@@ -84,6 +87,9 @@ pub(crate) enum VaultOp {
     BioActive = 1027,
     // work-around to offer a token reset due to earlier issues with TRNG
     ResetToken = 1028,
+    // one `meet` console command line forwarded by dc34-console - the discriminant must match
+    // dc34_api::meeting::MEETING_CMD_OP
+    MeetCmd = 1029,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

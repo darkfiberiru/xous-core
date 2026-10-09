@@ -5,6 +5,23 @@ use bytemuck::{Pod, Zeroable};
 use hex_literal::hex;
 use rand::Rng;
 
+pub mod meeting;
+pub mod meeting_store;
+
+/// One line of a `meet` console command, passed from dc34-console to the vault app.
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct MeetCmdIpc {
+    pub line: String,
+}
+
+/// Sends the arguments of a `meet` console command to the vault app, which executes it and prints
+/// the reply. `vault_conn` is a connection to `SERVER_NAME_VAULT2`.
+pub fn forward_meet_cmd(vault_conn: xous::CID, line: &str) -> Result<(), xous::Error> {
+    let buf = xous_ipc::Buffer::into_buf(MeetCmdIpc { line: line.to_owned() })
+        .or(Err(xous::Error::InternalError))?;
+    buf.send(vault_conn, meeting::MEETING_CMD_OP as u32).map(|_| ())
+}
+
 pub const DC34_DICT: &str = "dc34";
 pub const DC34_SECRET: &str = "k0";
 pub const DC34_TOUR: &str = "tour";

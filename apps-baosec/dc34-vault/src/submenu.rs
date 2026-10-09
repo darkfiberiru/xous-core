@@ -65,6 +65,13 @@ pub fn create_submenu(
         close_on_select: true,
     });
     menu_items.push(MenuItem {
+        name: String::from("Meeting Enter key..."),
+        action_conn: Some(vault_conn),
+        action_opcode: VaultOp::MenuMeetingEnter.to_u32().unwrap(),
+        action_payload: MenuPayload::Scalar([0, 0, 0, 0]),
+        close_on_select: true,
+    });
+    menu_items.push(MenuItem {
         name: String::from("Set keymap..."),
         action_conn: Some(vault_conn),
         action_opcode: VaultOp::SetKeyMap.to_u32().unwrap(),

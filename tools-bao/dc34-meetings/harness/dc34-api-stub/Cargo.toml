@@ -1,0 +1,12 @@
+[package]
+name = "dc34-api-stub"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "dc34_api"
+
+[dependencies]
+pddb = { path = "../pddb-stub", package = "pddb-stub" }
+log = "0.4"

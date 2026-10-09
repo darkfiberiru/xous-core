@@ -268,6 +268,7 @@ impl GlobalConfig {
                 VaultMode::IdleDevMode => (true, SHORT_TIMEOUT),
                 VaultMode::Password => (true, MEDIUM_TIMEOUT),
                 VaultMode::Totp => (true, MEDIUM_TIMEOUT),
+                VaultMode::Meeting => (true, MEDIUM_TIMEOUT),
                 VaultMode::GeneScan => (true, LONG_TIMEOUT),
                 VaultMode::ResponseGene { quantum: _ } => (true, LONG_TIMEOUT),
                 VaultMode::ShowKey { quantum: _ } => (true, LONG_TIMEOUT),
