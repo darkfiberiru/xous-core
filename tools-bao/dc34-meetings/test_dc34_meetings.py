@@ -126,6 +126,14 @@ class DeviceTests(unittest.TestCase):
         self.badge.add("x", "https://example.com/s")
         self.assertEqual(self.badge.list(), [("x", "https://example.com/s")])
 
+    def test_unicode_link_over_serial(self):
+        self.badge.add("Café", "https://bücher.example/café?q=日本")
+        self.assertEqual(self.badge.list(),
+                         [("Café", "https://xn--bcher-kva.example/caf%C3%A9?q=%E6%97%A5%E6%9C%AC")])
+        # the badge itself still refuses raw non-ASCII, so nothing untypeable can be stored
+        reply = self.badge._command("save " + self.badge._stage("x\thttps://bücher.example/".encode()))
+        self.assertTrue(reply.startswith("ERR"), reply)
+
     def test_non_ascii_name(self):
         self.badge.add("Réunion d'équipe ☕", "https://example.com/r")
         self.assertEqual(self.badge.list(), [("Réunion d'équipe ☕", "https://example.com/r")])
@@ -251,6 +259,27 @@ class HostTests(unittest.TestCase):
         ]:
             with self.assertRaisesRegex(dm.MeetingError, pattern):
                 dm.parse_file(text.splitlines())
+
+    def test_unicode_links_become_ascii(self):
+        # expected values are what Chromium's URL parser produces for the same input
+        cases = {
+            "https://bücher.example/café?q=日本#frag-é":
+                "https://xn--bcher-kva.example/caf%C3%A9?q=%E6%97%A5%E6%9C%AC#frag-%C3%A9",
+            "https://例え.テスト/パス": "https://xn--r8jz45g.xn--zckzah/%E3%83%91%E3%82%B9",
+            "https://user:pä@münchen.example:8443/a": "https://user:p%C3%A4@xn--mnchen-3ya.example:8443/a",
+            "zoommtg://zoom.us/join?name=José": "zoommtg://zoom.us/join?name=Jos%C3%A9",
+            # ASCII input is never rewritten, even where a browser would normalise it
+            "https://EXAMPLE.com/a%20b?x=1&y=2": "https://EXAMPLE.com/a%20b?x=1&y=2",
+        }
+        for given, expected in cases.items():
+            self.assertEqual(dm.to_ascii_url(given), expected)
+            self.assertEqual(dm.validate("n", given), ("n", expected))
+        # characters that IDNA 2003 and browsers map differently are refused rather than guessed
+        with self.assertRaisesRegex(dm.MeetingError, "xn--"):
+            dm.to_ascii_url("https://straße.example/")
+        # a space is still an error, not something to paper over
+        with self.assertRaisesRegex(dm.MeetingError, "space"):
+            dm.validate("n", "https://example.com/caf é")
 
     def test_qr_payload(self):
         self.assertEqual(dm.qr_payload(" Standup ", "https://example.com/s"),

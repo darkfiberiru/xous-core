@@ -26,8 +26,10 @@ from __future__ import annotations
 import argparse
 import base64
 import os
+import re
 import sys
 import time
+import urllib.parse
 import zlib
 from typing import Iterable, Optional
 
@@ -46,10 +48,52 @@ class MeetingError(Exception):
     """A problem the user can fix: bad input, badge not ready, transfer failed."""
 
 
+# -- Unicode links ---------------------------------------------------------------------------------
+#
+# The badge types with a US-layout USB keyboard, so it can only send printable ASCII. Every Unicode
+# URL has an ASCII spelling that browsers treat as the same address: punycode for the host name and
+# percent-encoded UTF-8 everywhere else. Links are converted to that spelling here, before transfer;
+# the badge itself stays strict and refuses anything it could not type.
+
+# Python's "idna" codec implements IDNA 2003, which maps these characters differently from current
+# browsers (e.g. it turns ß into ss). Converting them here could silently point at a different site.
+_IDNA_DEVIATIONS = "\u00df\u03c2\u200c\u200d"
+
+
+def _percent_encode_non_ascii(text: str) -> str:
+    return re.sub(r"[^\x00-\x7f]", lambda m: "".join(f"%{b:02X}" for b in m.group().encode("utf-8")), text)
+
+
+def to_ascii_url(url: str) -> str:
+    """Return the ASCII spelling of `url`. ASCII input is returned untouched."""
+    url = url.strip()
+    if url.isascii():
+        return url
+    parts = urllib.parse.urlsplit(url)
+    netloc = parts.netloc
+    if netloc and not netloc.isascii():
+        userinfo, at, hostport = netloc.rpartition("@")
+        host, colon, port = hostport.partition(":")
+        if any(c in host for c in _IDNA_DEVIATIONS):
+            raise MeetingError(f"the host name {host!r} contains a character that browsers and this tool "
+                               "convert differently. Open the link in a browser, copy the address back "
+                               "out (it will start with xn--) and use that instead.")
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError as e:
+            raise MeetingError(f"cannot convert the host name {host!r} to ASCII: {e}") from None
+        netloc = _percent_encode_non_ascii(userinfo) + at + host + colon + port
+    rest = urllib.parse.urlunsplit(("", "", parts.path, parts.query, parts.fragment))
+    prefix = f"{parts.scheme}:" if parts.scheme else ""
+    if netloc or url[len(prefix):].startswith("//"):
+        prefix += "//" + netloc
+    return prefix + _percent_encode_non_ascii(rest)
+
+
 # -- Validation: the same rules the firmware enforces, so mistakes are caught before any transfer --
 
 def validate(name: str, url: str) -> tuple[str, str]:
-    name, url = name.strip(), url.strip()
+    name, url = name.strip(), to_ascii_url(url)
     if not name:
         raise MeetingError("name is empty")
     if len(name.encode("utf-8")) > NAME_MAX:
@@ -61,8 +105,8 @@ def validate(name: str, url: str) -> tuple[str, str]:
     if len(url) > URL_MAX:
         raise MeetingError(f"{name!r}: URL is longer than {URL_MAX} characters")
     if not all(0x21 <= ord(c) <= 0x7E for c in url):
-        raise MeetingError(f"{name!r}: URL contains a space or a non-ASCII character, which the badge "
-                           "cannot type. Percent-encode it (a space is %20).")
+        raise MeetingError(f"{name!r}: URL contains a space or control character, which the badge "
+                           "cannot type. Write a space as %20.")
     return name, url
 
 

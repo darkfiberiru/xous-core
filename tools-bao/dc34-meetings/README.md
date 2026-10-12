@@ -92,6 +92,13 @@ you do not control.
 - Name: up to 48 bytes, no `:` or `|`, no control characters. Names are unique.
 - Link: up to 1024 characters of printable ASCII with no spaces. Write a space as `%20`.
 
+The badge types with a US-layout USB keyboard, so it can only send ASCII. A link with accented or
+non-Latin characters is still fine to give to `dc34_meetings.py` or the QR page: both rewrite it
+in the ASCII spelling that browsers treat as the same address (punycode for the host name,
+percent-encoding elsewhere) and show you the result. The limit applies to the rewritten link.
+`dc34_meetings.py` refuses host names containing `ß`, `ς` or zero-width joiners, which it and
+browsers convert differently; paste the browser's `xn--` form for those.
+
 These are enforced on the badge when a link is added and again every time one is read back, so
 a damaged or hostile entry cannot make the badge type anything other than those characters plus
 the optional Enter. Over USB any scheme is allowed, so app links such as `zoommtg://` work.

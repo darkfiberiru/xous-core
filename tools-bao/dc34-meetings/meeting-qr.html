@@ -83,7 +83,7 @@
         <p class="hint">What you will see on the badge. Up to 48 bytes, no <code>:</code> or <code>|</code>.</p>
         <label for="url">Link</label>
         <input type="text" id="url" autocomplete="off" spellcheck="false" placeholder="https://meet.example.com/abc-defg-hij">
-        <p class="hint">Exactly what the badge will type. No spaces; write a space as <code>%20</code>.</p>
+        <p class="hint">What the badge will type. No spaces; write a space as <code>%20</code>. Accented and non-Latin characters are rewritten in plain ASCII for you.</p>
       </div>
 
       <div id="pane-many" hidden>
@@ -2427,10 +2427,19 @@ var qrcode = function() {
     if (enc.encode(name).length > NAME_MAX) return { error: "The name is longer than 48 bytes." };
     if (/[:|\u0000-\u001f\u007f-\u009f]/.test(name)) return { error: "The name cannot contain : or |." };
     if (!url) return { error: "The link is empty." };
+    var converted = false;
+    if (/[^\x00-\x7f]/.test(url)) {
+      // The badge types with a US-layout keyboard, so it can only send ASCII. Let the browser's own
+      // URL parser produce the ASCII spelling it would use for this address (punycode host name,
+      // percent-encoded path), which is by definition the same address as far as browsers go.
+      if (/\s/.test(url)) return { error: "The link has a space in it. Write a space as %20." };
+      try { url = new URL(url).href; converted = true; }
+      catch (err) { return { error: "This does not look like a complete link, so it cannot be converted to plain ASCII." }; }
+    }
     if (url.length > URL_MAX) return { error: "The link is longer than 1024 characters." };
     if (!/^[\x21-\x7e]+$/.test(url)) return { error: "The link has a space or a character the badge cannot type. Write a space as %20." };
     if (!/^https?:\/\//i.test(url)) return { error: "A QR code link must start with https:// or http://. Load other kinds of link over USB." };
-    return { name: name, url: url, payload: "meeting://" + name + "|" + url };
+    return { name: name, url: url, converted: converted, payload: "meeting://" + name + "|" + url };
   }
 
   function collect() {
@@ -2504,7 +2513,8 @@ var qrcode = function() {
     if (info.bytes > DENSE_BYTES)
       setStatus("warn", info.bytes + " bytes makes a dense code (QR version " + info.version + "). If the badge will not read it, load this link over USB instead.");
     else
-      setStatus("ok", info.bytes + " bytes, QR version " + info.version + ". Ready to scan.");
+      setStatus("ok", info.bytes + " bytes, QR version " + info.version + ". Ready to scan."
+        + (e.converted ? " The link was rewritten in plain ASCII, shown below; it opens the same page." : ""));
   }
 
   function setMode(m) {
